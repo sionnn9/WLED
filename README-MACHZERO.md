@@ -190,5 +190,3 @@ The fix should be validated on an ESP32-C5 environment.
 ## Overall Objective
 
 Fix the ESP32-C5 Wi-Fi switching crash by ensuring that mDNS is properly stopped before Wi-Fi teardown and restarted only after a successful reconnection.
-
-> **Note:** The root cause and fix described above are the current working hypothesis and proposed approach. They should be confirmed through code inspection, serial logs and testing on the target hardware.
