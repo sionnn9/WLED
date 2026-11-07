@@ -1,81 +1,96 @@
-## ROUND 1
+﻿# WLED ESP32-C5 Wi‑Fi / mDNS Crash Analysis
 
-**THE ISSUE**
-So the issue is that whenever you switch the Wi-Fi from 2.4GHz to 5GHz, it crashes. Its using an ESP32-C5. The crash occurs because of the helper mDNS. mDNS helps by creating a name for the IP address, so we don’t have to use the IP address everywhere. But when you switch Wi-Fi, it disconnects and reconnects to the 5GHz network. When that happens, mDNS continues to run, but the memory is wiped, so whatever data was in the object gets erased. Now mDNS is not pointing anywhere as the object got deleted , so when you reconnect it gives an error. This is what happens right now, and it causes the crash.
+## Round 1
 
-**WHAT SHOULD HAPPEN**
-What should happen is that when you switch from 2.4GHz to 5GHz, mDNS shouldn't be left pointing at the old Wi-Fi object after it gets erased. Our solution, which is what we thought of: when you change the Wi-Fi band from 2.4GHz to 5GHz, we stop mDNS before the Wi-Fi is rebuilt. Once the board is connected to the new Wi-Fi and has an IP, we start mDNS again so it attaches to the new Wi-Fi object, and you won't have to reboot the board to recover.
+### The issue
 
-**CODEBASE PART**
-This code is in wled.cpp, in the function initConnection(). Since it is related to Wi-Fi and connection, it will fall in the initConnection() function.
+When the device switches from a 2.4 GHz Wi‑Fi network to a 5 GHz network, it crashes on an ESP32-C5.
 
-## ROUND 2
+The root cause is the mDNS helper. mDNS creates a name for the device's IP address so WLED does not need to reference raw IPs everywhere. But when the Wi‑Fi network changes, the device disconnects and reconnects to the new band. During that transition, mDNS keeps running even though the old network object has already been torn down. The in-memory state is wiped, so mDNS is left pointing at stale or invalid memory. Once the board reconnects, the stale pointer causes the crash.
 
-THE ARCHITECTURE OF THE REPO
+### What should happen
 
-The project is built around three main parts:
+When switching from 2.4 GHz to 5 GHz, mDNS should not remain attached to the old Wi‑Fi object after it has been destroyed. The fix is to stop mDNS before rebuilding the Wi‑Fi connection, then start it again only after the board reconnects and has a valid IP address. That prevents the stale pointer and avoids needing a reboot.
 
-**1.Core Firmware (wled00/)**
-This is where all the board logic lives.
+### Codebase part
 
-Entry & Setup (wled_main.cpp, wled.cpp): Manages system boot, main loops, and Wi-Fi connection flows.
+This logic lives in `wled.cpp`, specifically inside `initConnection()`. Since it is directly tied to Wi‑Fi connection setup and teardown, it belongs in the connection initialization flow.
 
-Web Server & APIs (wled_server.cpp, json.cpp): Serves the control interface and handles incoming commands.
+---
 
-Lights & Effects (FX.cpp, bus_manager.cpp): Calculates pixel animation colors and sends signal data to the physical GPIO pins.
+## Round 2
 
-**2.Web Interface (wled00/data/)**
-Contains the frontend files (HTML, JS, CSS) used to control WLED from a browser. During the build step, Node.js compiles these files into C++ header code so they can be stored directly inside the board's flash memory.
+### Repo architecture
 
-**3.Modules & Build Settings (usermods/ & platformio.ini)**
+The project is organized into three main areas:
 
-usermods/: A directory for adding optional extras like sensors or displays without altering core code.
+1. Core Firmware (`wled00/`)
+   - `wled_main.cpp`, `wled.cpp` handle startup, loop logic, and Wi‑Fi connection flow.
+   - `wled_server.cpp` and `json.cpp` serve the web UI and API endpoints.
+   - `FX.cpp` and `bus_manager.cpp` manage light effects and output timing.
 
-platformio.ini: Configures targets and compilation settings for supported microcontrollers like ESP32, ESP32-C5, or ESP8266.
+2. Web Interface (`wled00/data/`)
+   - Contains the HTML, CSS, and JS used by the browser UI.
+   - During the build step, Node.js compiles these assets into embedded C++ headers that are stored in flash.
 
-## Understand the codebase and identify the code relevant to your selected issue.
+3. Modules and Build Settings (`usermods/` and `platformio.ini`)
+   - `usermods/` holds optional add-ons such as sensors or displays.
+   - `platformio.ini` defines supported builds for chips like ESP32, ESP32-C5, and ESP8266.
 
-**1. The Vulnerable Code Segment in wled00/wled.cpp**
+---
 
-Inside wled.cpp, the initConnection() function is called whenever WLED needs to start a connection or perform a forced reconnection (e.g., when switching Wi-Fi bands from 2.4 GHz to 5 GHz on an ESP32-C5).
+## Relevant code and root cause
 
-Here is the exact section where the crash is triggered:
+### 1) Vulnerable code segment in `wled00/wled.cpp`
 
+Inside `initConnection()`, the connection restart path calls the Wi‑Fi teardown immediately before the stack is fully reset.
+
+```cpp
 DEBUG_PRINTLN(F("WiFi disconnect."));
 WiFi.disconnect(true); // close old connections but the mdns keeps running
 delay(5); // wait for hardware to be ready
 #ifdef ESP8266
 WiFi.setPhyMode(force802_3g ? WIFI_PHY_MODE_11G : WIFI_PHY_MODE_11N);
 #endif
+```
 
-**2. Why the Crash Happens in wled.cpp**
+### 2) Why the crash happens
 
-When the user changes settings to force 5 GHz, initConnection() is triggered.
+When the user forces a band switch from 2.4 GHz to 5 GHz, `initConnection()` runs.
 
-WiFi.disconnect(true) is executed immediately. This commands the underlying ESP-IDF stack to destroy the active esp_netif interface object.
+`WiFi.disconnect(true)` destroys the active network interface object in the ESP-IDF stack. However, mDNS is still active in the background because `MDNS.end()` was not called before the disconnect. Once the underlying `esp_netif` object is torn down, the mDNS/LwIP thread tries to query interface state and crashes with a fault. This is consistent with the reported panic where the system faults while checking interface state.
 
-However, mDNS is still running asynchronously in the background because MDNS.end() was never called before WiFi.disconnect(true).
+### 3) Proposed fix
 
-As esp_netif is destroyed, the mDNS LwIP thread (pcb_if_init_lwip) tries to check interface status via esp_netif_is_netif_up(), leading to a Load Access Fault (Panic Core 0 at address 0x000000e8).
+The intended repair is:
 
-**3. The Proposed Fix in wled00/wled.cpp**
+1. Trigger the band switch and call `initConnection()`.
+2. Stop mDNS before tearing down the old Wi‑Fi object.
+3. Disconnect and rebuild the network interface.
+4. Reconnect to the new Wi‑Fi network and obtain a new IP.
+5. Start mDNS again so it binds to the fresh Wi‑Fi object.
+6. Continue running without a crash or reboot.
 
-1.You switch the band, and WLED calls initConnection().
-2.New: WLED stops mDNS, so it lets go of the old Wi-Fi object.
-3.WLED tears down and rebuilds Wi-Fi, creating a new interface object.
-4.The board connects and gets its IP.
-5.New: WLED starts mDNS again, and it attaches to the new Wi-Fi object.
-6.The board keeps running, with no crash and no reboot.
+---
 
-## TESTING
+## Testing strategy
 
-Testing Strategy
-We will test the fix using the online Espressif simulator for the ESP32-C5:
+The fix should be validated with the Espressif simulator for the ESP32-C5:
 
-Load the modified firmware into the simulator.
+- Load the patched firmware into the simulator.
+- Connect to a 2.4 GHz network.
+- Trigger the switch to 5 GHz from the web UI.
+- Monitor serial logs during the transition.
+- Confirm that mDNS stops before teardown and restarts cleanly after reconnect.
 
-Connect to a 2.4GHz network.
+```text
+2.4 GHz -> switch band -> 5 GHz
+    |            |
+    |            +--> WiFi reconnects
+    |                     |
+    +--> MDNS stopped before teardown
+                             |
+                             +--> MDNS restarted after IP acquired
+```
 
-Trigger the switch to the 5GHz band via the web interface.
-
-Monitor the serial output during the switch.
+This should confirm that the old Wi‑Fi object is no longer being referenced after destruction, eliminating the crash path.
