@@ -1,96 +1,194 @@
-﻿# WLED ESP32-C5 Wi‑Fi / mDNS Crash Analysis
+# WLED ESP32-C5 – Wi-Fi / mDNS Crash Analysis
 
-## Round 1
+## Round 1: Understanding the Issue
 
-### The issue
+### Problem
 
-When the device switches from a 2.4 GHz Wi‑Fi network to a 5 GHz network, it crashes on an ESP32-C5.
+When the ESP32-C5 switches from a 2.4 GHz Wi-Fi network to a 5 GHz network, the device crashes.
 
-The root cause is the mDNS helper. mDNS creates a name for the device's IP address so WLED does not need to reference raw IPs everywhere. But when the Wi‑Fi network changes, the device disconnects and reconnects to the new band. During that transition, mDNS keeps running even though the old network object has already been torn down. The in-memory state is wiped, so mDNS is left pointing at stale or invalid memory. Once the board reconnects, the stale pointer causes the crash.
+The suspected cause is related to **mDNS (Multicast DNS)**. mDNS provides a hostname for the device, allowing users to access WLED without entering its IP address.
 
-### What should happen
+During a Wi-Fi network change, the existing network interface is disconnected and rebuilt. However, mDNS may continue running and retain references to the old network interface. When that interface is destroyed, these references can become invalid, potentially causing a crash.
 
-When switching from 2.4 GHz to 5 GHz, mDNS should not remain attached to the old Wi‑Fi object after it has been destroyed. The fix is to stop mDNS before rebuilding the Wi‑Fi connection, then start it again only after the board reconnects and has a valid IP address. That prevents the stale pointer and avoids needing a reboot.
+### Expected Behaviour
 
-### Codebase part
+mDNS should stop before the existing Wi-Fi interface is destroyed and restart only after the device reconnects and obtains a valid IP address.
 
-This logic lives in `wled.cpp`, specifically inside `initConnection()`. Since it is directly tied to Wi‑Fi connection setup and teardown, it belongs in the connection initialization flow.
+This should prevent stale network references and allow the device to switch networks without requiring a reboot.
 
----
+### Relevant Codebase
 
-## Round 2
+- **File:** `wled00/wled.cpp`
+- **Function:** `initConnection()`
 
-### Repo architecture
-
-WLED repository structure
- 1. Core firmware ( wled00/ )
- - Entry and setup —  wled_main.cpp  holds Arduino  setup() / loop() ;  wled.cpp  holds the  WLED  class (boot,  initConnection() ,  handleConnection() ,  initInterfaces() ).
- - Web server and APIs —  wled_server.cpp  (routes),  json.cpp  (JSON API),  ws.cpp  (WebSockets),  set.cpp  (settings POST),  xml.cpp  (settings pages are generated server-side),  cfg.cpp  (persists  cfg.json  and  wsec.json  to the filesystem).
- - Effects and output —  FX.cpp  plus  FX_fcn.cpp ,  FX_2Dfcn.cpp ,  FXparticleSystem.cpp ;  palettes.cpp / colors.cpp  for colour;  bus_manager.cpp  orchestrates buses, while the real pixel backends live in  wled00/src/WLEDpixelBus/  behind  bus_wrapper.h .
- - Networking —  network.cpp  (WiFi events),  udp.cpp  (sync/E1.31/DDP),  mqtt.cpp ,  ntp.cpp ,  improv.cpp .
- 2. Web interface ( wled00/data/ )
- HTML/CSS/JS sources, split per settings tab ( settings_wifi.htm , …).  npm run build  runs  node tools/cdata.js , which minifies and compresses them into  wled00/html_*.h  and  js_*.h . Those generated headers are compiled into flash; they are never edited or committed by hand.
- 3. Modules and build config
- -  usermods/  — optional features registered through  UsermodManager  ( um_manager.cpp ,  usermod.cpp ) and selected with  custom_usermods .
- -  platformio.ini  — build environments (≈22 default targets), feature flags, partition tables ( tools/*.csv ), per-board flash/PSRAM settings;  pio-scripts/  provides Python build hooks;  platformio_override.ini  is the gitignored local hook.
- -  tools/  — the Node build tooling and the project's only tests ( tools/cdata-test.js , run via  npm test  /  node --test ).
- -  .github/workflows/wled-ci.yml  — compiles all environments, then  validate_modules.py  checks usermod linkage.
- Runtime model (important): WLED is not a single-threaded sketch. Besides  loop() , FreeRTOS runs the async TCP server and, inside ESP-IDF, the WiFi and lwIP  tcpip  threads. Crashes such as the C5 mDNS one occur on the lwIP thread, not the sketch loop.
+Since this function handles Wi-Fi initialization and reconnection, it is the appropriate place to manage the mDNS lifecycle during network restarts.
 
 ---
 
-## Relevant code and root cause
+## Round 2: Understanding the Repository Architecture
 
-### 1) Vulnerable code segment in `wled00/wled.cpp`
+### 1. Core Firmware – `wled00/`
 
-Inside `initConnection()`, the connection restart path calls the Wi‑Fi teardown immediately before the stack is fully reset.
+| File | Responsibility |
+|---|---|
+| `wled_main.cpp` | Arduino `setup()` and `loop()` entry points |
+| `wled.cpp` | Core WLED class, boot, Wi-Fi initialization and interfaces |
+| `wled_server.cpp` | Web server routes |
+| `json.cpp` | JSON API |
+| `ws.cpp` | WebSocket communication |
+| `set.cpp` | Settings POST handling |
+| `xml.cpp` | Server-generated settings pages |
+| `cfg.cpp` | Configuration persistence |
+| `network.cpp` | Wi-Fi events |
+| `udp.cpp` | UDP synchronization, E1.31 and DDP |
+| `mqtt.cpp` | MQTT communication |
+| `ntp.cpp` | Network time synchronization |
+| `improv.cpp` | Improv Wi-Fi provisioning |
 
-```
+**Effects and LED output:**
+
+- `FX.cpp`, `FX_fcn.cpp`, `FX_2Dfcn.cpp`, `FXparticleSystem.cpp` – LED effects.
+- `palettes.cpp`, `colors.cpp` – Colour management.
+- `bus_manager.cpp` – LED bus management.
+- `src/WLEDpixelBus/` – Pixel output backends.
+
+### 2. Web Interface – `wled00/data/`
+
+Contains the HTML, CSS and JavaScript sources for WLED's web interface.
+
+- Settings are separated into individual files, such as `settings_wifi.htm`.
+- `npm run build` runs `tools/cdata.js`.
+- The build process minifies and compresses the interface into generated `.h` files.
+- These generated headers are compiled into firmware and should not be edited manually.
+
+### 3. Modules and Build Configuration
+
+- `usermods/` – Optional user extensions.
+- `um_manager.cpp` and `usermod.cpp` – Usermod management.
+- `platformio.ini` – Build environments, feature flags and board configurations.
+- `pio-scripts/` – Python build scripts.
+- `tools/` – Build utilities and tests.
+- `.github/workflows/wled-ci.yml` – CI firmware compilation and module validation.
+
+### 4. Runtime Architecture
+
+WLED is not limited to a single-threaded execution model.
+
+It uses:
+
+- Arduino `loop()` for the main application.
+- FreeRTOS for asynchronous tasks.
+- ESP-IDF Wi-Fi and lwIP TCP/IP threads for networking.
+- An asynchronous TCP server for web communication.
+
+**Important:** Networking crashes, such as the reported ESP32-C5 mDNS issue, may occur in the lwIP thread rather than the main application loop.
+
+---
+
+## Round 3: Root Cause Analysis
+
+### 1. Vulnerable Code
+
+**File:** `wled00/wled.cpp`  
+**Function:** `initConnection()`
+
+The relevant Wi-Fi restart code:
+
+```cpp
 DEBUG_PRINTLN(F("WiFi disconnect."));
-WiFi.disconnect(true); // close old connections but the mdns keeps running
-delay(5); // wait for hardware to be ready
+WiFi.disconnect(true); // Close old connections, but mDNS keeps running
+delay(5);               // Wait for hardware to be ready
+
 #ifdef ESP8266
 WiFi.setPhyMode(force802_3g ? WIFI_PHY_MODE_11G : WIFI_PHY_MODE_11N);
 #endif
 ```
 
-### 2) Why the crash happens
+### 2. Why the Crash Happens
 
-When the user forces a band switch from 2.4 GHz to 5 GHz, `initConnection()` runs.
+The suspected sequence is:
 
-`WiFi.disconnect(true)` destroys the active network interface object in the ESP-IDF stack. However, mDNS is still active in the background because `MDNS.end()` was not called before the disconnect. Once the underlying `esp_netif` object is torn down, the mDNS/LwIP thread tries to query interface state and crashes with a fault. This is consistent with the reported panic where the system faults while checking interface state.
+1. The user triggers a Wi-Fi band switch.
+2. `initConnection()` starts the connection restart process.
+3. `WiFi.disconnect(true)` disconnects and tears down the existing network interface.
+4. mDNS remains active because `MDNS.end()` was not called.
+5. mDNS may attempt to access the old network interface.
+6. Invalid interface references can cause a crash in the networking stack.
 
-### 3) Proposed fix
+The underlying issue is the lack of proper mDNS cleanup before Wi-Fi teardown.
 
-The intended repair is:
+### 3. Proposed Fix
 
-1. Trigger the band switch and call `initConnection()`.
-2. Stop mDNS before tearing down the old Wi‑Fi object.
-3. Disconnect and rebuild the network interface.
-4. Reconnect to the new Wi‑Fi network and obtain a new IP.
-5. Start mDNS again so it binds to the fresh Wi‑Fi object.
-6. Continue running without a crash or reboot.
+The proposed solution is to manage the mDNS lifecycle alongside Wi-Fi reconnection.
+
+1. Detect the Wi-Fi connection restart.
+2. Call `MDNS.end()` before disconnecting the existing interface.
+3. Disconnect and rebuild the Wi-Fi connection.
+4. Reconnect to the new network.
+5. Wait until the device obtains a valid IP address.
+6. Restart mDNS using `MDNS.begin()`.
+
+This ensures mDNS is initialized against the new network interface rather than retaining references to the old one.
 
 ---
 
-## Testing strategy
+## Round 4: Testing Strategy
 
-The fix should be validated with the Espressif simulator for the ESP32-C5:
+The fix should be validated on an ESP32-C5 environment.
 
-- Load the patched firmware into the simulator.
-- Connect to a 2.4 GHz network.
-- Trigger the switch to 5 GHz from the web UI.
-- Monitor serial logs during the transition.
-- Confirm that mDNS stops before teardown and restarts cleanly after reconnect.
+### Testing Steps
+
+1. Build the patched WLED firmware for ESP32-C5.
+2. Connect the device to a 2.4 GHz Wi-Fi network.
+3. Verify that mDNS starts successfully.
+4. Trigger the Wi-Fi band/network switch through the web interface.
+5. Monitor serial logs during disconnection and reconnection.
+6. Verify that mDNS stops before Wi-Fi teardown.
+7. Confirm that mDNS restarts after the new IP address is assigned.
+8. Check that the device remains operational without crashing or requiring a reboot.
+
+### Expected Execution Flow
 
 ```text
-2.4 GHz -> switch band -> 5 GHz
-    |            |
-    |            +--> WiFi reconnects
-    |                     |
-    +--> MDNS stopped before teardown
-                             |
-                             +--> MDNS restarted after IP acquired
+       2.4 GHz Wi-Fi
+              |
+              v
+       Trigger Wi-Fi switch
+              |
+              v
+          MDNS.end()
+              |
+              v
+       Wi-Fi disconnect
+              |
+              v
+     Rebuild network interface
+              |
+              v
+       Connect to new network
+              |
+              v
+        Obtain valid IP
+              |
+              v
+          MDNS.begin()
+              |
+              v
+       Normal WLED operation
 ```
 
-This should confirm that the old Wi‑Fi object is no longer being referenced after destruction, eliminating the crash path.
+### Expected Result
+
+- mDNS stops before the old Wi-Fi interface is destroyed.
+- The new Wi-Fi connection is initialized successfully.
+- mDNS restarts using the new network interface.
+- No stale network references remain.
+- The ESP32-C5 continues operating without a crash or manual reboot.
+
+---
+
+## Overall Objective
+
+Fix the ESP32-C5 Wi-Fi switching crash by ensuring that mDNS is properly stopped before Wi-Fi teardown and restarted only after a successful reconnection.
+
+> **Note:** The root cause and fix described above are the current working hypothesis and proposed approach. They should be confirmed through code inspection, serial logs and testing on the target hardware.
