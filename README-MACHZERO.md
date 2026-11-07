@@ -136,13 +136,6 @@ Espressif provides a browser-based ESP emulator:
 - **Online emulator:** https://espressif.github.io/esp-emulator/
 - **Espressif documentation:** https://github.com/espressif/esp-emulator
 
-The emulator lists ESP32-C5 support, but its current documented limitations are important:
-
-- ESP32-C5 2.4 GHz Wi-Fi is modelled.
-- 5 GHz Wi-Fi is not modelled.
-- The hosted browser version does not provide networking by itself; network testing requires its local relay.
-- The emulator expects a compatible merged firmware image. Confirm that the WLED build can be produced in a supported format before attempting to load it.
-
 ### What Can Be Checked Online
 
 If a compatible WLED firmware image can be loaded, use the emulator to inspect whether the firmware boots and to review available console output. This may help with basic startup checks, but it cannot reproduce the actual 2.4 GHz-to-5 GHz transition.
