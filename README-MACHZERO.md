@@ -45,7 +45,7 @@ The project is organized into three main areas:
 
 Inside `initConnection()`, the connection restart path calls the Wi‑Fi teardown immediately before the stack is fully reset.
 
-```cpp
+```
 DEBUG_PRINTLN(F("WiFi disconnect."));
 WiFi.disconnect(true); // close old connections but the mdns keeps running
 delay(5); // wait for hardware to be ready
