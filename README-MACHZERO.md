@@ -22,20 +22,20 @@ This logic lives in `wled.cpp`, specifically inside `initConnection()`. Since it
 
 ### Repo architecture
 
-The project is organized into three main areas:
-
-1. Core Firmware (`wled00/`)
-   - `wled_main.cpp`, `wled.cpp` handle startup, loop logic, and Wi‑Fi connection flow.
-   - `wled_server.cpp` and `json.cpp` serve the web UI and API endpoints.
-   - `FX.cpp` and `bus_manager.cpp` manage light effects and output timing.
-
-2. Web Interface (`wled00/data/`)
-   - Contains the HTML, CSS, and JS used by the browser UI.
-   - During the build step, Node.js compiles these assets into embedded C++ headers that are stored in flash.
-
-3. Modules and Build Settings (`usermods/` and `platformio.ini`)
-   - `usermods/` holds optional add-ons such as sensors or displays.
-   - `platformio.ini` defines supported builds for chips like ESP32, ESP32-C5, and ESP8266.
+WLED repository structure
+ 1. Core firmware ( wled00/ )
+ - Entry and setup —  wled_main.cpp  holds Arduino  setup() / loop() ;  wled.cpp  holds the  WLED  class (boot,  initConnection() ,  handleConnection() ,  initInterfaces() ).
+ - Web server and APIs —  wled_server.cpp  (routes),  json.cpp  (JSON API),  ws.cpp  (WebSockets),  set.cpp  (settings POST),  xml.cpp  (settings pages are generated server-side),  cfg.cpp  (persists  cfg.json  and  wsec.json  to the filesystem).
+ - Effects and output —  FX.cpp  plus  FX_fcn.cpp ,  FX_2Dfcn.cpp ,  FXparticleSystem.cpp ;  palettes.cpp / colors.cpp  for colour;  bus_manager.cpp  orchestrates buses, while the real pixel backends live in  wled00/src/WLEDpixelBus/  behind  bus_wrapper.h .
+ - Networking —  network.cpp  (WiFi events),  udp.cpp  (sync/E1.31/DDP),  mqtt.cpp ,  ntp.cpp ,  improv.cpp .
+ 2. Web interface ( wled00/data/ )
+ HTML/CSS/JS sources, split per settings tab ( settings_wifi.htm , …).  npm run build  runs  node tools/cdata.js , which minifies and compresses them into  wled00/html_*.h  and  js_*.h . Those generated headers are compiled into flash; they are never edited or committed by hand.
+ 3. Modules and build config
+ -  usermods/  — optional features registered through  UsermodManager  ( um_manager.cpp ,  usermod.cpp ) and selected with  custom_usermods .
+ -  platformio.ini  — build environments (≈22 default targets), feature flags, partition tables ( tools/*.csv ), per-board flash/PSRAM settings;  pio-scripts/  provides Python build hooks;  platformio_override.ini  is the gitignored local hook.
+ -  tools/  — the Node build tooling and the project's only tests ( tools/cdata-test.js , run via  npm test  /  node --test ).
+ -  .github/workflows/wled-ci.yml  — compiles all environments, then  validate_modules.py  checks usermod linkage.
+ Runtime model (important): WLED is not a single-threaded sketch. Besides  loop() , FreeRTOS runs the async TCP server and, inside ESP-IDF, the WiFi and lwIP  tcpip  threads. Crashes such as the C5 mDNS one occur on the lwIP thread, not the sketch loop.
 
 ---
 
