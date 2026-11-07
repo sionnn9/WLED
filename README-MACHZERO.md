@@ -41,24 +41,12 @@ Inside wled.cpp, the initConnection() function is called whenever WLED needs to 
 
 Here is the exact section where the crash is triggered:
 
-void WLED::initConnection()
-{
-#if defined(ESP8266) || defined(ESP32)
-if (WLED_WIFI_CONFIGURED)
-{
-DEBUG_PRINTLN(F("initConnection() called"));
-
-    //  THE BUG: WiFi driver teardown occurs HERE while mDNS thread is still active!
-    WiFi.disconnect(true);
-
-    // ... Wi-Fi band & mode configuration ...
-    WiFi.mode(WIFI_STA);
-
-    // ... setup AP/STA parameters ...
-
-}
+DEBUG_PRINTLN(F("WiFi disconnect."));
+WiFi.disconnect(true); // close old connections but the mdns keeps running
+delay(5); // wait for hardware to be ready
+#ifdef ESP8266
+WiFi.setPhyMode(force802_3g ? WIFI_PHY_MODE_11G : WIFI_PHY_MODE_11N);
 #endif
-}
 
 **2. Why the Crash Happens in wled.cpp**
 
@@ -72,31 +60,22 @@ As esp_netif is destroyed, the mDNS LwIP thread (pcb_if_init_lwip) tries to chec
 
 **3. The Proposed Fix in wled00/wled.cpp**
 
-To prevent the crash, gracefully shut down the mDNS service before tearing down the network interface:
+1.You switch the band, and WLED calls initConnection().
+2.New: WLED stops mDNS, so it lets go of the old Wi-Fi object.
+3.WLED tears down and rebuilds Wi-Fi, creating a new interface object.
+4.The board connects and gets its IP.
+5.New: WLED starts mDNS again, and it attaches to the new Wi-Fi object.
+6.The board keeps running, with no crash and no reboot.
 
-void WLED::initConnection()
-{
-#if defined(ESP8266) || defined(ESP32)
-if (WLED_WIFI_CONFIGURED)
-{
-DEBUG_PRINTLN(F("initConnection() called"));
+## TESTING
 
-    //  FIX: Safely stop mDNS before tearing down the network interface
-    #ifndef WLED_DISABLE_MDNS
-    if (espmDNSstarted) {
-      MDNS.end();
-      espmDNSstarted = false;
-      DEBUG_PRINTLN(F("mDNS stopped prior to network re-init"));
-    }
-    #endif
+Testing Strategy
+We will test the fix using the online Espressif simulator for the ESP32-C5:
 
-    // Now safely tear down the Wi-Fi connection
-    WiFi.disconnect(true);
+Load the modified firmware into the simulator.
 
-    // Re-initialization logic continues normally...
+Connect to a 2.4GHz network.
 
-}
-#endif
-}
+Trigger the switch to the 5GHz band via the web interface.
 
-Once the board completes the 5 GHz handshake, initInterfaces() in wled.cpp will automatically restart mDNS via MDNS.begin() when WiFi.status() == WL_CONNECTED.
+Monitor the serial output during the switch.
