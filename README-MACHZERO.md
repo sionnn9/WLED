@@ -2,6 +2,15 @@
 
 ## Round 1: Understanding the Issue
 
+*Repository:* [WLED](https://github.com/wled/WLED) is open-source firmware that controls addressable LED strips (WS2812B, SK6812 and many others) from an ESP32 board over Wi-Fi. It has about 19k stars, 4.5k forks and 336 contributors, and it is mostly C++ (79%). It is licensed under EUPL-1.2.
+
+The web page, the phone app, Home Assistant, MQTT, Alexa and the JSON API all reach the lights through Wi-Fi, so the Wi-Fi code is central to the project. The core firmware is in ⁠ wled00/ ⁠, the web interface is in ⁠ wled00/data/ ⁠, optional add-ons are in ⁠ usermods/ ⁠, and build settings are in ⁠ platformio.ini ⁠.
+
+*Issue:* [#5945](https://github.com/wled/WLED/issues/5945). The ESP32-C5 is the first ESP32 chip with 5 GHz Wi-Fi, and WLED still marks its builds as experimental. When the Wi-Fi band is switched, the board can crash inside mDNS, the service that gives it the ⁠ wled-xxxxxx.local ⁠ name. A reboot fixes it. The issue is labelled as a bug, is on the 17.0 milestone, and had no pull request or assignee when we checked on 7 November.
+
+*Cause:* when the band changes, ⁠ initConnection() ⁠ in ⁠ wled00/wled.cpp ⁠ destroys the Wi-Fi interface with ⁠ WiFi.mode(WIFI_MODE_NULL) ⁠ while mDNS is still running.
+
+
 ### Problem
 
 When the ESP32-C5 switches from a 2.4 GHz Wi-Fi network to a 5 GHz network, the device reportedly crashes.
