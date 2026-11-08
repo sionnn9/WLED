@@ -1,17 +1,16 @@
 # WLED ESP32-C5 – Wi-Fi / mDNS Crash Analysis
 
-## Round 1: Understanding the Issue
+# Round 1: Understanding the Issue
 
-*Repository:* [WLED](https://github.com/wled/WLED) is open-source firmware that controls addressable LED strips (WS2812B, SK6812 and many others) from an ESP32 board over Wi-Fi. It has about 19k stars, 4.5k forks and 336 contributors, and it is mostly C++ (79%). It is licensed under EUPL-1.2.
+**Repository:** [WLED](https://github.com/wled/WLED) is open-source firmware that controls addressable LED strips from an ESP32 board over Wi-Fi.
 
 The web page, the phone app, Home Assistant, MQTT, Alexa and the JSON API all reach the lights through Wi-Fi, so the Wi-Fi code is central to the project. The core firmware is in ⁠ wled00/ ⁠, the web interface is in ⁠ wled00/data/ ⁠, optional add-ons are in ⁠ usermods/ ⁠, and build settings are in ⁠ platformio.ini ⁠.
 
-*Issue:* [#5945](https://github.com/wled/WLED/issues/5945). The ESP32-C5 is the first ESP32 chip with 5 GHz Wi-Fi, and WLED still marks its builds as experimental. When the Wi-Fi band is switched, the board can crash inside mDNS, the service that gives it the ⁠ wled-xxxxxx.local ⁠ name. A reboot fixes it. The issue is labelled as a bug, is on the 17.0 milestone, and had no pull request or assignee when we checked on 7 November.
-
-*Cause:* when the band changes, ⁠ initConnection() ⁠ in ⁠ wled00/wled.cpp ⁠ destroys the Wi-Fi interface with ⁠ WiFi.mode(WIFI_MODE_NULL) ⁠ while mDNS is still running.
-
+**Issue:** [#5945](https://github.com/wled/WLED/issues/5945). The ESP32-C5 is the first ESP32 chip with 5 GHz Wi-Fi, and WLED still marks its builds as experimental. When the Wi-Fi band is switched, the board can crash inside mDNS, the service that gives it the ⁠ wled-xxxxxx.local ⁠ name. A reboot fixes it. and had no pull request or assignee when we checked on 7 November.
 
 ### Problem
+
+Cause:\_ when the band changes, ⁠ initConnection() ⁠ in ⁠ wled00/wled.cpp ⁠ destroys the Wi-Fi interface with ⁠ WiFi.mode(WIFI_MODE_NULL) ⁠ while mDNS is still running.
 
 When the ESP32-C5 switches from a 2.4 GHz Wi-Fi network to a 5 GHz network, the device reportedly crashes.
 
@@ -34,25 +33,25 @@ This function handles Wi-Fi initialization and reconnection, making it the relev
 
 ---
 
-## Round 2: Understanding the Repository Architecture
+# Round 2: Understanding the Repository Architecture
 
 ### 1. Core Firmware – `wled00/`
 
-| File | Responsibility |
-|---|---|
-| `wled_main.cpp` | Arduino `setup()` and `loop()` entry points |
-| `wled.cpp` | Core WLED class, boot, Wi-Fi initialization and interfaces |
-| `wled_server.cpp` | Web server routes |
-| `json.cpp` | JSON API |
-| `ws.cpp` | WebSocket communication |
-| `set.cpp` | Settings POST handling |
-| `xml.cpp` | Server-generated settings pages |
-| `cfg.cpp` | Configuration persistence |
-| `network.cpp` | Wi-Fi events |
-| `udp.cpp` | UDP synchronization, E1.31 and DDP |
-| `mqtt.cpp` | MQTT communication |
-| `ntp.cpp` | Network time synchronization |
-| `improv.cpp` | Improv Wi-Fi provisioning |
+| File              | Responsibility                                             |
+| ----------------- | ---------------------------------------------------------- |
+| `wled_main.cpp`   | Arduino `setup()` and `loop()` entry points                |
+| `wled.cpp`        | Core WLED class, boot, Wi-Fi initialization and interfaces |
+| `wled_server.cpp` | Web server routes                                          |
+| `json.cpp`        | JSON API                                                   |
+| `ws.cpp`          | WebSocket communication                                    |
+| `set.cpp`         | Settings POST handling                                     |
+| `xml.cpp`         | Server-generated settings pages                            |
+| `cfg.cpp`         | Configuration persistence                                  |
+| `network.cpp`     | Wi-Fi events                                               |
+| `udp.cpp`         | UDP synchronization, E1.31 and DDP                         |
+| `mqtt.cpp`        | MQTT communication                                         |
+| `ntp.cpp`         | Network time synchronization                               |
+| `improv.cpp`      | Improv Wi-Fi provisioning                                  |
 
 **Effects and LED output:**
 
@@ -94,7 +93,7 @@ Networking failures may occur in a networking task or system thread rather than 
 
 ---
 
-## Relevant Code and Root Cause
+# ROUND 3:Implementation
 
 ### 1. Vulnerable Code
 
@@ -147,7 +146,7 @@ Espressif provides a browser-based ESP emulator:
 - **Online emulator:** https://espressif.github.io/esp-emulator/
 - **Espressif documentation:** https://github.com/espressif/esp-emulator
 
-The emulator runs the real firmware, but it does not model radio bands. Association always happens on the emulated access point, so a genuine 2.4 GHz-to-5 GHz association cannot be tested there. What the emulator *can* exercise is the code path a band change drives: `initConnection()` running `WiFi.mode(WIFI_MODE_NULL)` while mDNS is still up.
+The emulator runs the real firmware, but it does not model radio bands. Association always happens on the emulated access point, so a genuine 2.4 GHz-to-5 GHz association cannot be tested there. What the emulator _can_ exercise is the code path a band change drives: `initConnection()` running `WiFi.mode(WIFI_MODE_NULL)` while mDNS is still up.
 
 ### Test Setup
 
@@ -183,19 +182,20 @@ MCAUSE  : 0x00000005  MTVAL   : 0x000000f3
 
 `MCAUSE 5` is a load access fault and `MTVAL 0x000000f3` is the address being read, which is consistent with a stale netif pointer being dereferenced. The fault comes after `mode NULL applied`, so the interface was already gone when the reader ran. Symbolised against `firmware.elf`:
 
-| Address | Symbol |
-|---|---|
-| `MEPC 0x42096d4e` | `esp_netif_is_netif_up` |
-| `RA 0x420a34ea` | `join_group` |
-| `0x420a1830` | `mdns_priv_get_esp_netif` |
-| `0x420a36ac` | `pcb_if_init_lwip` |
-| `0x4208069a` | `tcpip_thread` |
+| Address           | Symbol                    |
+| ----------------- | ------------------------- |
+| `MEPC 0x42096d4e` | `esp_netif_is_netif_up`   |
+| `RA 0x420a34ea`   | `join_group`              |
+| `0x420a1830`      | `mdns_priv_get_esp_netif` |
+| `0x420a36ac`      | `pcb_if_init_lwip`        |
+| `0x4208069a`      | `tcpip_thread`            |
 
 The fault is on the lwIP (`tcpip_thread`) side, not in `loop()`. `join_group` is reached through mDNS code, and the netif reference it uses is already invalid. This matches the sequence above. It is also why the state matters more than which request triggered the reconnect: the crash needs an `initConnection()` that tears the interface down while mDNS is still running, which is the state a band change produces (`set.cpp` sets `forceReconnect` while the device is connected and mDNS is up).
 
 ### Video Evidence
 
 - [Issue reproduction](Issue.mp4) - crash during the second cycle of a 10-cycle test.
+
 - [Successful test](Solved.mp4) - no errors across three rounds of the 10-cycle test.
 
 ### What This Test Does Not Show
