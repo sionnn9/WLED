@@ -104,16 +104,16 @@ WiFi.setPhyMode(force802_3g ? WIFI_PHY_MODE_11G : WIFI_PHY_MODE_11N);
 #endif
 ```
 
-### 2. Suspected Crash Sequence
+### 2. Crash Sequence
 
 1. The user triggers a Wi-Fi connection or band change.
 2. `initConnection()` starts the connection restart process.
-3. `WiFi.disconnect(true)` disconnects or tears down the existing network interface.
-4. mDNS may remain active because `MDNS.end()` was not called.
-5. mDNS may attempt to access an interface that is no longer valid.
-6. This may cause a fault in the networking stack.
+3. `WiFi.disconnect(true)` and `WiFi.mode(WIFI_MODE_NULL)` tear down the network interface.
+4. mDNS is still running, because nothing calls `MDNS.end()` on this path.
+5. mDNS leaves a multicast group join pending for the destroyed interface.
+6. The join runs on the lwIP thread after the interface is gone and dereferences it.
 
-This is the current root-cause hypothesis and should be checked against the ESP32-C5 panic log, backtrace and the exact Wi-Fi/mDNS library implementation.
+Steps 1-4 are visible in the source. Steps 5-6 were confirmed from the emulator panic log and backtrace described below, not only from reading the code: the fault is in the lwIP thread inside `join_group`, reached from mDNS, and not in `loop()`.
 
 ### 3. Proposed Fix
 
@@ -123,9 +123,11 @@ Manage the mDNS lifecycle alongside Wi-Fi reconnection:
 2. Disconnect and rebuild the Wi-Fi connection.
 3. Reconnect to the network.
 4. Wait until the device has a valid IP address.
-5. Start mDNS again using `MDNS.begin()` and handle any initialization failure.
+5. Restart mDNS after the connection is back, with its service records intact.
 
-The implementation should follow the mDNS API and connection-event flow used by the ESP32 Arduino core version in the WLED build.
+Note on step 5: a bare `MDNS.begin()` is not sufficient here. WLED already restarts mDNS inside `initInterfaces()`, which is called once the station has an IP, and that path re-registers the services and TXT records (`http`, `wled`, `mac`). Restarting with `MDNS.begin()` alone would bring the responder back without those records, so the restart should go through the existing path instead of a separate call.
+
+This fix has not been validated on hardware yet; see the limitations at the end.
 
 ---
 
@@ -136,13 +138,61 @@ Espressif provides a browser-based ESP emulator:
 - **Online emulator:** https://espressif.github.io/esp-emulator/
 - **Espressif documentation:** https://github.com/espressif/esp-emulator
 
-### What Can Be Checked Online
+The emulator runs the real firmware, but it does not model radio bands. Association always happens on the emulated access point, so a genuine 2.4 GHz-to-5 GHz association cannot be tested there. What the emulator *can* exercise is the code path a band change drives: `initConnection()` running `WiFi.mode(WIFI_MODE_NULL)` while mDNS is still up.
 
-If a compatible WLED firmware image can be loaded, use the emulator to inspect whether the firmware boots and to review available console output. This may help with basic startup checks, but it cannot reproduce the actual 2.4 GHz-to-5 GHz transition.
+### Test Setup
 
-### What Requires Real Hardware or a Suitable RF Test Setup
+- ESP32-C5 build with `WLED_DEBUG` enabled, merged into a 4 MB flash image and loaded into the online emulator, which reaches the local network through a relay on `localhost`.
+- The emulated access point credentials are seeded in `cfg.json` and `wsec.json`, so the device connects without any UI interaction.
+- The emulator has no usable settings UI from the page (the websocket relay is blocked on HTTPS), so a temporary harness at the top of `WLED::loop()` drove the change: once the station was connected **and** mDNS had started (`interfacesInited` is set right after `MDNS.begin()`), it waited 3 s, then set `wifiBandMode = WIFI_BAND_MODE_5G_ONLY` and `forceReconnect` - the same thing `set.cpp` does when the band dropdown changes. It then set the band back to `WIFI_BAND_MODE_AUTO` so the emulated radio could reconnect and restart mDNS, and repeated for 10 cycles.
+- The harness is temporary and is not part of the proposed fix.
 
-To validate the reported band-switch crash:
+### Result: the crash reproduces
+
+The device panicked on **cycle 2 of 10**, while mDNS was running and the band switch was pending:
+
+```text
+[TEST] band cycle 2/10 -> 5GHz only (mDNS active before teardown)
+Initial connect or forced reconnect (@ 35s).
+WiFi: Default SSID (myssid) used.
+initConnection() called @ 35s.
+WiFi disconnect.
+WiFi-E: Disconnected! @ 35s
+WiFi-E: STA Stopped
+WiFi-E: Event 100
+getWLEDHostname: 'wled-000001'
+WiFi mode_null: driver teardown / re-init.
+[TEST] post-teardown: mode NULL applied
+WiFi-E: driver ready.
+WiFi-E: STA Started
+Access point disabled (init).
+Guru Meditation Error: Core  0 panic'ed (Load access fault). Exception was unhandled.
+
+MEPC    : 0x42096d4e  RA      : 0x420a34ea  SP      : 0x4082a1e0
+MCAUSE  : 0x00000005  MTVAL   : 0x000000f3
+```
+
+`MCAUSE 5` is a load access fault and `MTVAL 0x000000f3` is the address being read, which is consistent with a stale netif pointer being dereferenced. The fault comes after `mode NULL applied`, so the interface was already gone when the reader ran. Symbolised against `firmware.elf`:
+
+| Address | Symbol |
+|---|---|
+| `MEPC 0x42096d4e` | `esp_netif_is_netif_up` |
+| `RA 0x420a34ea` | `join_group` |
+| `0x420a1830` | `mdns_priv_get_esp_netif` |
+| `0x420a36ac` | `pcb_if_init_lwip` |
+| `0x4208069a` | `tcpip_thread` |
+
+The fault is on the lwIP (`tcpip_thread`) side, not in `loop()`. `join_group` is reached through mDNS code, and the netif reference it uses is already invalid. This matches the sequence above. It is also why the state matters more than which request triggered the reconnect: the crash needs an `initConnection()` that tears the interface down while mDNS is still running, which is the state a band change produces (`set.cpp` sets `forceReconnect` while the device is connected and mDNS is up).
+
+### What This Test Does Not Show
+
+- **No 5 GHz association.** The emulated radio is single-band, so the station associated with the 2.4 GHz access point throughout. How the device behaves on a real 5 GHz network is not covered.
+- **Band request result not yet recorded.** Whether the emulated driver accepts `WIFI_BAND_MODE_5G_ONLY` (rather than returning an error) is being instrumented separately; the crash reproduced on the teardown path regardless.
+- **One reproduction.** The crash rate on hardware is unknown, so this shows the mechanism, not how often it triggers.
+
+### What Requires Real Hardware
+
+To validate the reported crash and any fix to it:
 
 1. Build WLED with the proposed mDNS lifecycle change.
 2. Flash it to an ESP32-C5 development board.
@@ -153,7 +203,7 @@ To validate the reported band-switch crash:
 7. Verify that mDNS starts again only after the new interface has a valid IP.
 8. Repeat the reconnection test and confirm that the device remains stable.
 
-**Important limitation:** The Espressif online ESP-EMU cannot verify a real 2.4 GHz-to-5 GHz switch because 5 GHz Wi-Fi is not currently modelled. Use it only for the checks it supports; validate the actual crash fix on suitable hardware.
+**Important limitation:** the emulator reproduced the teardown race, but it cannot verify a real 2.4 GHz-to-5 GHz switch, because 5 GHz Wi-Fi is not modelled. Use it for the mechanism and for repeatability, and validate the actual crash fix on suitable hardware.
 
 ---
 
