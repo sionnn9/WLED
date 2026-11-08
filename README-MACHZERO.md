@@ -193,10 +193,19 @@ MCAUSE  : 0x00000005  MTVAL   : 0x000000f3
 The fault is on the lwIP (`tcpip_thread`) side, not in `loop()`. `join_group` is reached through mDNS code, and the netif reference it uses is already invalid. This matches the sequence above. It is also why the state matters more than which request triggered the reconnect: the crash needs an `initConnection()` that tears the interface down while mDNS is still running, which is the state a band change produces (`set.cpp` sets `forceReconnect` while the device is connected and mDNS is up).
 
 ### Video Evidence
-
+  
 - [Issue reproduction](Issue.mp4) - crash during the second cycle of a 10-cycle test.
+  We simulated the ESP32-C5 using Espressif tools, reproduced the Wi-Fi band-switch crash, and captured video and error log proof showing mDNS accessing deleted memory.
+  ##BEFORE
+  <img width="1600" height="860" alt="BEFORE" src="https://github.com/user-attachments/assets/a672ee0f-7fc3-4676-8367-6cf15f5141e0" />
 
+  
 - [Successful test](Solved.mp4) - no errors across three rounds of the 10-cycle test.
+  Following bug identification, we implemented the code fix and verified crash free performance by testing the Wi-Fi band-switching logic within Espressif's simulated ESP32-C5environment
+  ##AFTER
+  <img width="1600" height="860" alt="AFTER" src="https://github.com/user-attachments/assets/8bc02d37-ff50-407b-ac46-f6e8a64c1aec" />
+
+
 
 ### What This Test Does Not Show
 
