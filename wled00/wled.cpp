@@ -769,6 +769,21 @@ void WLED::initConnection()
     statusESPNow = ESP_NOW_STATE_UNINIT;
   }
 #endif
+  // Stop the mDNS responder before the network interface is torn down further below.
+  // The responder keeps a multicast group join outstanding for the current netif. The
+  // WiFi.mode(WIFI_MODE_NULL) call below frees that netif, and the join then runs on the tcpip
+  // thread against freed memory: issue #5945, where an ESP32-C5 panics with a load access fault
+  // in esp_netif_is_netif_up, reached from join_group.
+  // Only stop a responder that is actually running: interfacesInited is still set at this point
+  // (handleConnection() clears it after initConnection() returns), and strlen(cmDNS) > 0 is the
+  // same condition initInterfaces() uses before starting the responder.
+  // No manual restart is needed here: once the station has an IP again, initInterfaces() calls
+  // MDNS.end() + MDNS.begin(), then re-registers the "http"/"wled" services and the "mac" TXT
+  // record. Stopping the responder in this function therefore does not lose any of them.
+  if (interfacesInited && strlen(cmDNS) > 0) {
+    DEBUG_PRINTLN(F("Stopping mDNS before Wi-Fi teardown."));
+    MDNS.end();
+  }
 
   DEBUG_PRINTLN(F("WiFi disconnect."));
   WiFi.disconnect(true); // close old connections
