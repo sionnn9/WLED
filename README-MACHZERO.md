@@ -184,6 +184,11 @@ MCAUSE  : 0x00000005  MTVAL   : 0x000000f3
 
 The fault is on the lwIP (`tcpip_thread`) side, not in `loop()`. `join_group` is reached through mDNS code, and the netif reference it uses is already invalid. This matches the sequence above. It is also why the state matters more than which request triggered the reconnect: the crash needs an `initConnection()` that tears the interface down while mDNS is still running, which is the state a band change produces (`set.cpp` sets `forceReconnect` while the device is connected and mDNS is up).
 
+### Video Evidence
+
+- [Issue reproduction](Issue.mp4) - crash during the second cycle of a 10-cycle test.
+- [Successful test](Solved.mp4) - no errors across three rounds of the 10-cycle test.
+
 ### What This Test Does Not Show
 
 - **No 5 GHz association.** The emulated radio is single-band, so the station associated with the 2.4 GHz access point throughout. How the device behaves on a real 5 GHz network is not covered.
@@ -210,3 +215,27 @@ To validate the reported crash and any fix to it:
 ## Overall Objective
 
 Investigate and fix the ESP32-C5 Wi-Fi reconnection crash by ensuring that mDNS is stopped before Wi-Fi interface teardown and restarted after a successful reconnection and IP assignment.
+
+---
+
+## Presentation
+
+[Open the MACHZERO presentation](1.pdf)
+
+---
+
+## Software Requirements
+
+- **Node.js 20 or newer** for the WLED web interface build and tests.
+- **npm** for installing the Node.js dependencies.
+- **Python 3.13** with the packages listed in [`requirements.txt`](requirements.txt) for PlatformIO.
+- **PlatformIO 6.1.19** for compiling the firmware.
+- A modern web browser for the [Espressif ESP-EMU](https://espressif.github.io/esp-emulator/).
+- An ESP32-C5 development board and a supported 2.4 GHz/5 GHz Wi-Fi setup for hardware validation.
+
+Install the project dependencies with:
+
+```bash
+npm ci
+pip install -r requirements.txt
+```
